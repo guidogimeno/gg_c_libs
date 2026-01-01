@@ -85,6 +85,7 @@ f64 json_get_number(JSON_Element *element);
 b32 json_get_boolean(JSON_Element *element);
 String json_get_string(JSON_Element *element);
 JSON_Element *json_object_get(JSON_Element *object, String key);
+
 #define json_for_each(element, parent) \
     for (JSON_Element *element = parent->child; element != NULL; element = element->next) \
 

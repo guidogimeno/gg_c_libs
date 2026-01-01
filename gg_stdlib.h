@@ -1,11 +1,53 @@
+// Operating System
+#if defined(__linux__) || defined(__gnu_linux__)
+    #define OS_LINUX 1
+#elif defined(__APPLE__) && defined(__MACH__)
+    #define OS_MAC 1
+#else
+    #error Systema Operativo no soportado.
+#endif
+
+#if !defined(OS_LINUX)
+    #define OS_LINUX 0
+#endif
+#if !defined(OS_MAC)
+    #define OS_MAC 0
+#endif
+
+// Compiler
+#if defined(__clang__)
+    #define COMPILER_CLANG 1
+#endif
+
+#if !defined(COMPILER_CLANG)
+    #define COMPILER_CLANG 0
+#endif
+
+// Function prefix
+#ifdef GG_STATIC
+    #define GG_DEF static
+#else
+    #define GG_DEF extern
+#endif
+
+// Includes
 #include <assert.h>
+#include <math.h>
+#include <stdarg.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
 #include <string.h>
-#include <sys/mman.h>
+
+#if OS_LINUX || OS_MAC
+    #include <sys/mman.h>
+#endif
+
+#if OS_MAC
+    #include <arm_neon.h>
+#endif
 
 typedef uint8_t  u8;
 typedef uint16_t u16;
@@ -17,6 +59,7 @@ typedef int16_t i16;
 typedef int32_t i32;
 typedef int64_t i64;
 
+typedef int8_t  b8;
 typedef int32_t b32;
 typedef int64_t b64;
 
@@ -29,19 +72,84 @@ typedef double f64;
 #define GB 1024 * MB
 
 
+// ###################################
+// ### Logger ########################
+// ###################################
+
+void log_info(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vprintf(format, args);
+    va_end(args);
+}
+
+void log_error(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+}
+
 
 // ###################################
 // ### Utils #########################
 // ###################################
 
 #define panic_with_msg(msg) do { \
-    fprintf(stderr, "panic at %s:%d - %s\n", __FILE__, __LINE__, msg); \
+    log_error("panic at %s:%d - %s\n", __FILE__, __LINE__, msg); \
     exit(EXIT_FAILURE); \
 } while (0);
 
 #define array_size(arr) (sizeof(arr)/sizeof((arr)[0]))
 
-#define debug_assert(expression) if (!(expression)) {*(i32 *)0 = 0;}
+#define debug_assert(expression) if (!(expression)) { log_error("Assert failed -> file=%s function=%s line=%d\n", __FILE__, __FUNCTION__, __LINE__); __builtin_trap(); }
+
+#define memory_set(dst, byte, size) memset((dst), (byte), (size))
+#define memory_zero(dst, size) memory_set((dst), 0, (size))
+#define memory_zero_struct(strct) memory_zero((strct), sizeof(*(strct)))
+#define memory_zero_array(arr) memory_zero((arr), sizeof(arr))
+
+void memory_copy_aligned(void *restrict dest, const void *restrict src, size_t size) {
+    u8 *d = (u8 *)dest;
+    u8 *s = (u8 *)src;
+
+    while (size >= 16) {
+        // TODO: esto es para ciertos OS/compiladores nada mas
+        uint8x16_t source_vec = vld1q_u8(s);
+        vst1q_u8(d, source_vec);
+        d += 16;
+        s += 16;
+        size -= 16;
+    }
+
+    while (size--) {
+        *d++ = *s++;
+    }
+}
+
+void memory_copy(void *restrict dest, const void *restrict src, size_t size) {
+    if (size == 0) {
+        return;
+    }
+
+    u8 *d = (u8 *)dest;
+    u8 *s = (u8 *)src;
+
+    uintptr_t dest_addr = (uintptr_t)dest;
+    size_t missalignment = dest_addr & 15;
+    if (missalignment > 0) {
+        size_t to_align = 16 - missalignment;
+        size_t head = (to_align > size ? size : to_align);
+
+        for (u64 i = 0; i < head; i++) {
+            *d++ = *s++;
+        }
+
+        size -= head;
+    }
+
+    memory_copy_aligned(d, s, size);
+}
 
 // ###################################
 // ### Math  #########################
@@ -55,7 +163,7 @@ typedef union {
     f32 v[2];
 } Vec2_F32;
 
-inline Vec2_F32 vec2_f32(f32 x, f32 y) {
+GG_DEF inline Vec2_F32 vec2_f32(f32 x, f32 y) {
     Vec2_F32 result;
 
     result.x = x;
@@ -64,7 +172,11 @@ inline Vec2_F32 vec2_f32(f32 x, f32 y) {
     return result;
 }
 
-inline Vec2_F32 vec2_f32_add(Vec2_F32 a, Vec2_F32 b) {
+GG_DEF inline f32 vec2_length_sqr(Vec2_F32 vec) {
+    return vec.x * vec.x + vec.y * vec.y;
+}
+
+GG_DEF inline Vec2_F32 vec2_f32_sum(Vec2_F32 a, Vec2_F32 b) {
     Vec2_F32 result = {
         .x = a.x + b.x,
         .y = a.y + b.y,
@@ -72,7 +184,7 @@ inline Vec2_F32 vec2_f32_add(Vec2_F32 a, Vec2_F32 b) {
     return result;
 }
 
-inline Vec2_F32 vec2_f32_mult(Vec2_F32 a, Vec2_F32 b) {
+GG_DEF inline Vec2_F32 vec2_f32_mult(Vec2_F32 a, Vec2_F32 b) {
     Vec2_F32 result = {
         .x = a.x * b.x,
         .y = a.y * b.y,
@@ -80,7 +192,15 @@ inline Vec2_F32 vec2_f32_mult(Vec2_F32 a, Vec2_F32 b) {
     return result;
 }
 
-inline Vec2_F32 vec2_f32_sub(Vec2_F32 a, Vec2_F32 b) {
+GG_DEF inline Vec2_F32 vec2_f32_mult_by(Vec2_F32 a, f32 num) {
+    Vec2_F32 result = {
+        .x = a.x * num,
+        .y = a.y * num,
+    };
+    return result;
+}
+
+GG_DEF inline Vec2_F32 vec2_f32_sub(Vec2_F32 a, Vec2_F32 b) {
     Vec2_F32 result = {
         .x = a.x - b.x,
         .y = a.y - b.y,
@@ -88,17 +208,49 @@ inline Vec2_F32 vec2_f32_sub(Vec2_F32 a, Vec2_F32 b) {
     return result;
 }
 
-typedef struct {
+// producto escalar
+GG_DEF inline f32 vec2_f32_dot_prod(Vec2_F32 a, Vec2_F32 b) {
+    return (a.x * b.x) + (a.y * b.y);
+}
+
+// perpendicular
+GG_DEF inline Vec2_F32 vec2_f32_perp(Vec2_F32 vec) {
+    Vec2_F32 result = {
+        .x = -vec.y,
+        .y = vec.x
+    };
+    return result;
+}
+
+GG_DEF inline Vec2_F32 vec2_f32_negate(Vec2_F32 vec) {
+    Vec2_F32 result = {
+        .x = -vec.x,
+        .y = -vec.y
+    };
+    return result;
+}
+
+typedef union {
     struct {
         f32 x;
         f32 y;
         f32 z;
         f32 w;
     };
+    struct {
+        f32 x0;
+        f32 y0;
+        f32 x1;
+        f32 y1;
+    };
+    struct {
+        Vec2_F32 xy;
+        Vec2_F32 zw;
+    };
     f32 v[4];
 } Vec4_F32;
 
-inline Vec4_F32 vec4_f32(f32 x, f32 y, f32 z, f32 w) {
+GG_DEF inline Vec4_F32 vec4_f32(f32 x, f32 y, f32 z, f32 w) {
     Vec4_F32 result;
 
     result.x = x;
@@ -109,6 +261,35 @@ inline Vec4_F32 vec4_f32(f32 x, f32 y, f32 z, f32 w) {
     return result;
 }
 
+GG_DEF inline Vec4_F32 vec4_f32_sum(Vec4_F32 a, Vec4_F32 b) {
+    Vec4_F32 result = {
+        .x = a.x + b.x,
+        .y = a.y + b.y,
+        .z = a.z + b.z,
+        .w = a.w + b.w,
+    };
+    return result;
+}
+
+GG_DEF inline Vec4_F32 vec4_f32_sum_by(Vec4_F32 a, f32 num) {
+    Vec4_F32 result = {
+        .x = a.x + num,
+        .y = a.y + num,
+        .z = a.z + num,
+        .w = a.w + num,
+    };
+    return result;
+}
+
+// linear interpolation
+GG_DEF inline Vec4_F32 vec4_f32_linear_interp(Vec4_F32 a, Vec4_F32 b, f32 t) {
+    f32 c = (1.0f - t);
+    return vec4_f32_sum(
+        vec4_f32(a.x * c, a.y * c, a.z * c, a.w * c),
+        vec4_f32(b.x * t, b.y * t, b.z * t, b.w * t)
+    );
+}
+
 f32 math_exp(f32 a) {
     union { f32 f; f32 i; } u, v;
     u.i = (i32)(6051102.0f * a + 1056478197.0f);
@@ -116,11 +297,15 @@ f32 math_exp(f32 a) {
     return u.f / v.f;
 }
 
-inline f32 math_sin(f32 radians) {
+i64 math_abs(i64 num) {
+    return num < 0 ? -num : num;
+}
+
+GG_DEF inline f32 math_sin(f32 radians) {
     return sinf(radians);
 }
 
-inline f32 math_cos(f32 radians) {
+GG_DEF inline f32 math_cos(f32 radians) {
     return cosf(radians);
 }
 
@@ -145,10 +330,37 @@ f32 math_pow(f32 a, f32 b) {
     return flipped ? 1.0f/r : r;
 }
 
-i32 math_round_f32_to_i32(f32 num) {
+GG_DEF inline i32 math_ceil_f32_to_i32(f32 num) {
     return (i32)(num + 0.5f);
 }
 
+GG_DEF inline i32 math_floor_f32_to_i32(f32 num) {
+    return (i32)(num);
+}
+
+typedef struct {
+    u32 index;
+    b32 found;
+} Bit_Scan;
+
+GG_DEF inline Bit_Scan find_least_significant_set_bit(u32 value) {
+    Bit_Scan result = {0};
+#if __clang__
+    result.index = __builtin_ffs(value);
+    if (result.index > 0) {
+        result.found = true;
+    }
+#else
+    for (u32 i = 0; i < 32; i++) {
+        if (value & (1 << i)) {
+            result.index = i;
+            result.found = true;
+            break;
+        }
+    }
+#endif
+    return result;
+}
 
 // ###################################
 // ### Arenas ####################
@@ -169,7 +381,7 @@ struct Arena {
 
 struct Arena_Temp {
     Arena *arena;
-    u32       position;
+    u64 position;
 };
 
 __thread Arena *thread_local_arenas_pool[MAX_SCRATCH_COUNT] = {0, 0};
@@ -269,7 +481,7 @@ void arena_temp_end(Arena_Temp arena_temp) {
 Arena_Temp get_scratch(Arena **conflicts, u64 conflict_count) {
     if (thread_local_arenas_pool[0] == 0) {
         for (u32 i = 0; i < MAX_SCRATCH_COUNT; i++) {
-            thread_local_arenas_pool[i] = arena_make(1 * MB); 
+            thread_local_arenas_pool[i] = arena_make(2 * MB); 
         }
     }
 
@@ -304,7 +516,7 @@ Arena_Temp get_scratch(Arena **conflicts, u64 conflict_count) {
 // ### Strings #######################
 // ###################################
 
-#define STRING_BUILDER_DEFAULT_CAPACITY 32
+#define STRING_BUILDER_DEFAULT_CAPACITY 128
 
 typedef struct String String;
 typedef struct String_Builder String_Builder;
@@ -338,9 +550,14 @@ bool string_is_empty(String str);
 
 String string_to_lower(Arena *a, String str);
 String string_to_upper(Arena *a, String str);
+
 String string_from_b32(Arena *a, b32 boolean);
+String string_from_i32(Arena *a, i64 num);
 String string_from_i64(Arena *a, i64 num);
+String string_from_u32(Arena *a, u64 num);
+String string_from_u64(Arena *a, u64 num);
 String string_from_f64(Arena *a, f64 num, i32 precision);
+
 i32 string_to_i32(String str);
 i64 string_to_i64(String str);
 f32 string_to_f32(String str);
@@ -452,7 +669,7 @@ String string_sub_cstr(Arena *a, const char *text, u32 start, u32 end) {
     u32 len = end - start + 1;
 
     char *dest = (char *)arena_alloc(a, len);
-    dest = memcpy(dest, text + start, len);
+    memory_copy(dest, text + start, len);
 
     String str = {
         .data = dest,
@@ -649,11 +866,11 @@ String string_from_b32(Arena *arena, b32 boolean) {
     if (boolean) {
         size = 4;
         buff = arena_alloc(arena, size);
-        memcpy(buff, "true", size);
+        memory_copy(buff, "true", size);
     } else {
         size = 5;
         buff = arena_alloc(arena, size);
-        memcpy(buff, "false", size);
+        memory_copy(buff, "false", size);
     }
 
     result.data = buff;
@@ -694,6 +911,8 @@ static const char two_digit_table[100][2] = {
 
 static const char int64_min_str[] = "-9223372036854775808";
 static const char int64_max_str[] = "9223372036854775807";
+static const char int32_min_str[] = "-2147483648";
+static const char int32_max_str[] = "2147483647";
 
 String string_from_i64(Arena *arena, i64 num) {
     if (num == 0) {
@@ -701,57 +920,206 @@ String string_from_i64(Arena *arena, i64 num) {
         buf[0] = '0';
         String str = { .data = buf, .size = 1 };
         return str;
-    }
-    if (num == INT64_MIN) {
+    } else if (num == INT64_MIN) {
         char *buf = (char *)arena_alloc(arena, 20);
-        for (int i = 0; i < 20; i++) buf[i] = int64_min_str[i];
+        memory_copy(buf, (void *)int64_min_str, 20);
         String str = { .data = buf, .size = 20 };
         return str;
-    }
-    if (num == INT64_MAX) {
+    } else if (num == INT64_MAX) {
         char *buf = (char *)arena_alloc(arena, 19);
-        for (int i = 0; i < 19; i++) buf[i] = int64_max_str[i];
+        memory_copy(buf, (void *)int64_max_str, 19);
         String str = { .data = buf, .size = 19 };
         return str;
-    }
-
-    bool is_negative = num < 0;
-    u64 abs_num = (u64)llabs(num);
-    u32 length = is_negative ? 1 : 0;
-    for (u32 i = 0; i < 20; i++) {
-        if (abs_num < powers_of_10[i]) {
-            length += digit_counts[i];
-            break;
+    } else {
+        bool is_negative = num < 0;
+        u64 abs_num = (u64)math_abs(num);
+        u32 length = is_negative ? 1 : 0;
+        for (u32 i = 0; i < 20; i++) {
+            if (abs_num < powers_of_10[i]) {
+                length += digit_counts[i];
+                break;
+            }
         }
-    }
 
-    char *buf = (char *)arena_alloc(arena, length);
-    u32 i = length - 1;
+        char *buf = (char *)arena_alloc(arena, length);
+        u32 i = length - 1;
 
-    while (abs_num >= 100) {
-        u32 pair = abs_num % 100;
-        abs_num /= 100;
-        buf[i] = two_digit_table[pair][1];
-        buf[i - 1] = two_digit_table[pair][0];
-        i -= 2;
-    }
-
-    if (abs_num > 0) {
-        if (abs_num < 10) {
-            buf[i] = '0' + (char)abs_num;
-        } else {
-            buf[i] = two_digit_table[abs_num][1];
-            buf[i - 1] = two_digit_table[abs_num][0];
-            i--;
+        while (abs_num >= 100) {
+            u32 pair = abs_num % 100;
+            abs_num /= 100;
+            buf[i] = two_digit_table[pair][1];
+            buf[i - 1] = two_digit_table[pair][0];
+            i -= 2;
         }
-    }
 
-    if (is_negative) {
-        buf[0] = '-';
-    }
+        if (abs_num > 0) {
+            if (abs_num < 10) {
+                buf[i] = '0' + (char)abs_num;
+            } else {
+                buf[i] = two_digit_table[abs_num][1];
+                buf[i - 1] = two_digit_table[abs_num][0];
+                i--;
+            }
+        }
 
-    String str = { .data = buf, .size = length };
-    return str;
+        if (is_negative) {
+            buf[0] = '-';
+        }
+
+        String str = { .data = buf, .size = length };
+        return str;
+    }
+}
+
+String string_from_i32(Arena *arena, i64 num) {
+    if (num == 0) {
+        char *buf = (char *)arena_alloc(arena, 1);
+        buf[0] = '0';
+        String str = { .data = buf, .size = 1 };
+        return str;
+    } else if (num == INT32_MIN) {
+        char *buf = (char *)arena_alloc(arena, 11);
+        memory_copy(buf, (void *)int32_min_str, 11);
+        String str = { .data = buf, .size = 11 };
+        return str;
+    } else if (num == INT32_MAX) {
+        char *buf = (char *)arena_alloc(arena, 10);
+        memory_copy(buf, (void *)int32_max_str, 10);
+        String str = { .data = buf, .size = 10 };
+        return str;
+    } else { 
+        bool is_negative = num < 0;
+        u64 abs_num = (u64)math_abs(num);
+        u32 length = is_negative ? 1 : 0;
+        for (u32 i = 0; i < array_size(powers_of_10); i++) {
+            if (abs_num < powers_of_10[i]) {
+                length += digit_counts[i];
+                break;
+            }
+        }
+
+        char *buf = (char *)arena_alloc(arena, length);
+        u32 i = length - 1;
+
+        while (abs_num >= 100) {
+            u32 pair = abs_num % 100;
+            abs_num /= 100;
+            buf[i] = two_digit_table[pair][1];
+            buf[i - 1] = two_digit_table[pair][0];
+            i -= 2;
+        }
+
+        if (abs_num > 0) {
+            if (abs_num < 10) {
+                buf[i] = '0' + (char)abs_num;
+            } else {
+                buf[i] = two_digit_table[abs_num][1];
+                buf[i - 1] = two_digit_table[abs_num][0];
+                i--;
+            }
+        }
+
+        if (is_negative) {
+            buf[0] = '-';
+        }
+
+        String str = { .data = buf, .size = length };
+        return str;
+    }
+}
+
+String string_from_u64(Arena *arena, u64 num) {
+    if (num == 0) {
+        char *buf = (char *)arena_alloc(arena, 1);
+        buf[0] = '0';
+        String str = { .data = buf, .size = 1 };
+        return str;
+    } else if (num == 18446744073709551615ULL) {
+        char *buf = (char *)arena_alloc(arena, 20);
+        memory_copy(buf, "18446744073709551615", 20);
+        String str = { .data = buf, .size = 20 };
+        return str;
+    } else {
+        u32 length = 0;
+        for (u32 i = 0; i < array_size(powers_of_10); i++) {
+            if (num < powers_of_10[i]) {
+                length = digit_counts[i];
+                break;
+            }
+        }
+
+        // for very large numbers
+        if (length == 0) {
+            length = 20;
+        }
+
+        char *buf = (char *)arena_alloc(arena, length);
+        u32 i = length - 1;
+
+        while (num >= 100) {
+            u32 pair = num % 100;
+            num /= 100;
+            buf[i]     = two_digit_table[pair][1];
+            buf[i - 1] = two_digit_table[pair][0];
+            i -= 2;
+        }
+
+        if (num > 0) {
+            if (num < 10) {
+                buf[i--] = '0' + (char)num;
+            } else {
+                buf[i]     = two_digit_table[num][1];
+                buf[i - 1] = two_digit_table[num][0];
+                i -= 2;
+            }
+        }
+
+        String str = { .data = buf, .size = length };
+        return str;
+    }
+}
+
+String string_from_u32(Arena *arena, u64 num) {
+    if (num == 0) {
+        char *buf = (char *)arena_alloc(arena, 1);
+        buf[0] = '0';
+        return (String){ .data = buf, .size = 1 };
+    } else if (num == 4294967295U) {
+        char *buf = (char *)arena_alloc(arena, 10);
+        memory_copy(buf, "4294967295", 10);
+        return (String){ .data = buf, .size = 10 };
+    } else {
+        u32 length = 0;
+        u32 temp = num;
+
+        do {
+            length++;
+            temp /= 10;
+        } while (temp > 0);
+
+        char *buf = (char *)arena_alloc(arena, length);
+        u32 i = length - 1;
+
+        while (num >= 100) {
+            u32 pair = num % 100;
+            num /= 100;
+            buf[i]     = two_digit_table[pair][1];
+            buf[i - 1] = two_digit_table[pair][0];
+            i -= 2;
+        }
+
+        if (num > 0) {
+            if (num < 10) {
+                buf[i--] = '0' + (char)num;
+            } else {
+                buf[i]     = two_digit_table[num][1];
+                buf[i - 1] = two_digit_table[num][0];
+                i -= 2;
+            }
+        }
+
+        return (String){ .data = buf, .size = length };
+    }
 }
 
 String string_from_f64(Arena *a, f64 num, i32 precision) {
@@ -892,22 +1260,22 @@ void sbuilder_append(String_Builder *builder, String str) {
     if (total_length > builder->capacity) {
         u32 new_capacity = builder->capacity;
 
-        while (builder->capacity < total_length) {
+        while (new_capacity < total_length) {
             new_capacity *= 2;
         }
 
-        printf("realocacion - capacidad anterior: %d capacidad nueva: %d\n", builder->capacity, new_capacity);
+        log_info("reallocation - old_cap=%d new_cap=%d\n", builder->capacity, new_capacity);
 
         u8 *new_data = arena_alloc(builder->arena, new_capacity);
 
-        memcpy(new_data, builder->data, builder->length);
+        memory_copy(new_data, builder->data, builder->length);
 
         builder->data = new_data;
         builder->capacity = new_capacity;
 
     }
 
-    memcpy(builder->data + builder->length, str.data, str.size);
+    memory_copy(builder->data + builder->length, str.data, str.size);
 
     builder->length = total_length;
 }
@@ -948,7 +1316,7 @@ void dynamic_array_grow(Arena *arena, void *dynamic_array_ptr, size_t item_size)
     } else {
         void *data = arena_alloc(arena, 2 * dynamic_array->capacity * item_size);
         if (dynamic_array->length > 0) {
-            memcpy(data, dynamic_array->items, items_offset);
+            memory_copy(data, dynamic_array->items, items_offset);
         }
         dynamic_array->items = data;
     }
@@ -988,5 +1356,57 @@ u64 hash_generic(void *data, size_t size) {
         hash *= 1099511628211ULL; // numero primo
     }
     return hash;
+}
+
+
+
+
+
+// ###################################
+// ### IO ###########################
+// ###################################
+
+String read_entire_file_with_mode(Arena *arena, const char *filename, char *mode, bool *success) {
+    if (success) {
+        *success = false;
+    }
+
+    FILE *file = fopen(filename, mode);
+    if (!file) {
+        return (String){0};
+    }
+
+    void *buffer = NULL;
+    u32 buffer_size = 0;
+
+    if (fseek(file, 0, SEEK_END) == 0) {
+        i32 file_size = ftell(file);
+        if (file_size >= 0) {
+            if (fseek(file, 0, SEEK_SET) == 0) {
+                Arena_Temp temp = arena_temp_begin(arena);
+                buffer = arena_alloc(temp.arena, (size_t)file_size + 1);
+                size_t bytes_read = fread(buffer, 1, (size_t)file_size, file);
+                if (bytes_read == (size_t)file_size) {
+                    buffer_size = (u32)bytes_read;
+                    if (success) {
+                        *success = true;
+                    }
+                } else {
+                    arena_temp_end(temp);
+                }
+            }
+        }
+    }
+    fclose(file);
+
+    String result = {
+        .data = (const char *)buffer,
+        .size = buffer_size
+    };
+    return result;
+}
+
+String read_entire_file(Arena *arena, const char* filename, bool *success) {
+    return read_entire_file_with_mode(arena, filename, "r", success);
 }
 
