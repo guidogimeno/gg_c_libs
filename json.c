@@ -485,7 +485,7 @@ static u32 json_append_element_as_string(Arena *arena, JSON_Element *element, b3
                 char *str_buff = arena_alloc_aligned(arena, str_size, 1);
 
                 str_buff[0] = '"';
-                memcpy(str_buff + 1, item->key.data, str_size);
+                memory_copy(str_buff + 1, item->key.data, str_size);
                 str_buff[str_size - 2] = '"';
                 str_buff[str_size - 1] = ':';
 
@@ -499,7 +499,7 @@ static u32 json_append_element_as_string(Arena *arena, JSON_Element *element, b3
                     char *str_buff = arena_alloc_aligned(arena, str_size, 1);
 
                     str_buff[0] = '"';
-                    memcpy(str_buff + 1, item->value.string.data, str_size);
+                    memory_copy(str_buff + 1, item->value.string.data, str_size);
                     str_buff[str_size - 1] = '"';
 
                     object_size += str_size;
@@ -525,7 +525,7 @@ static u32 json_append_element_as_string(Arena *arena, JSON_Element *element, b3
                 case JSON_TYPE_NULL: {
                     char *null_buff = arena_alloc_aligned(arena, 4, 1);
 
-                    memcpy(null_buff, "null", 4);
+                    memory_copy(null_buff, "null", 4);
 
                     object_size += 4;
                     break;
@@ -535,11 +535,11 @@ static u32 json_append_element_as_string(Arena *arena, JSON_Element *element, b3
                     if (item->value.boolean) {
                         size = 4;
                         char *buff = arena_alloc_aligned(arena, size, 1);
-                        memcpy(buff, "true", size);
+                        memory_copy(buff, "true", size);
                     } else {
                         size = 5;
                         char *buff = arena_alloc_aligned(arena, size, 1);
-                        memcpy(buff, "false", size);
+                        memory_copy(buff, "false", size);
                     }
 
                     object_size += size;
@@ -583,4 +583,5 @@ String json_to_string(Arena *arena, JSON_Element *json) {
 
     return result;
 }
+
 

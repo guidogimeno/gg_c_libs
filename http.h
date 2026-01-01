@@ -17,7 +17,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
-#include <signal.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -173,6 +172,8 @@ struct Request {
     String version;
     Headers_Map headers_map;
     Body body;
+
+    void *user_data;
 };
 
 struct Response {
@@ -214,6 +215,10 @@ struct Server {
     u32 connections_count;
     Connection *connections;
 
+    // Datos(readonly) que el usuario puede inyectar 
+    // para tener disponible en el Request de los handlers
+    void *user_data;
+
     Segment_Pattern *patterns_tree;
 };
 
@@ -232,3 +237,4 @@ void http_response_add_header(Response *response, String key, String value);
 void http_response_write(Response *response, u8 *content, size_t size);
 
 String *http_headers_get(Headers_Map *headers_map, String name);
+

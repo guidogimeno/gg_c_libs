@@ -14,7 +14,7 @@ static Http_Handler *find_handler_while_adding_path_params(Segment_Pattern **req
 static i32 events_add_fd(i32 events_fd, i32 fd);
 static i32 events_remove_fd(i32 events_fd, i32 fd);
 
-static void connection_init(Connection *connection, i32 fd, struct sockaddr_in address);
+static void connection_init(Connection *connection, i32 fd, struct sockaddr_in address, void *user_data);
 static i32 connection_write(Connection *connection, Response response);
 
 static String encode_response(Arena *arena, Response response);
@@ -29,7 +29,7 @@ static void pattern_parser_add_segment(Pattern_Parser *parser, Arena *arena, Str
 
 static String http_status_reason(u16 status);
 
-static void request_init(Request *request);
+static void request_init(Request *request, void *user_data);
 static void request_add_uri_segments(Request *request, Arena *arena, String uri);
 static void request_add_segment_literal(Request *request, Arena *arena, String literal);
 static void request_add_query_param(Request *request, Arena *arena, String key, String value);
@@ -53,19 +53,19 @@ Server *http_server_make(Arena *arena) {
 
 void http_server_handle(Server *server, char *pattern, Http_Handler *handler) {
     if (pattern == NULL || handler == NULL) {
-        panic_with_msg("http_server_handle args {pattern} and {handler} cannot be null" );
+        panic_with_msg("http_server_handle args {pattern} and {handler} cannot be null");
     }
 
     String pattern_str = string(pattern);
     if (pattern_str.size == 0) {
-        panic_with_msg("http_server_handle arg {pattern} cannot be empty" );
+        panic_with_msg("http_server_handle arg {pattern} cannot be empty");
     }
 
     Pattern_Parser parser = {0}; 
     pattern_parser_parse(&parser, server->arena, pattern_str);
 
     if (parser.state == PATTERN_PARSER_STATE_FAILED || parser.state != PATTERN_PARSER_STATE_FINISHED) {
-        panic_with_msg("http_server_handle failed to parse pattern" );
+        panic_with_msg("http_server_handle failed to parse pattern");
     }
 
     parser.last_segment->handler = handler;
@@ -224,7 +224,7 @@ static void pattern_parser_add_segment(Pattern_Parser *parser, Arena *arena, Str
 
 i32 http_server_start(Server *server, u32 port, char *host) {
     if (signals_init() == -1) {
-        printf("error al iniciar las signals\n");
+        log_error("error al iniciar las signals\n");
         return EXIT_FAILURE;
     }
 
@@ -244,7 +244,7 @@ i32 http_server_start(Server *server, u32 port, char *host) {
     }
 
     if (events_add_fd(events_fd, server_fd) == -1) {
-        printf("error al agregar server_fd al epoll events\n");
+        log_error("error al agregar server_fd al epoll events\n");
         return EXIT_FAILURE;
     }
 
@@ -280,7 +280,7 @@ i32 http_server_start(Server *server, u32 port, char *host) {
 
             Connection *connection = server_find_connection(server, event_fd);
             if (connection == NULL) {
-                printf("error: no se logro encontrar la conexion\n");
+                log_error("error: no se logro encontrar la conexion\n");
                 events_remove_fd(events_fd, event_fd);
                 continue;
             }
@@ -363,31 +363,27 @@ static void signal_handler(i32 signal_number) {
 static i32 signals_init(void) {
     if (signal(SIGINT, &signal_handler) == SIG_ERR) {
         return -1;
-    }
-
-    if (signal(SIGCHLD, SIG_IGN) == SIG_ERR) {
+    } else if (signal(SIGCHLD, SIG_IGN) == SIG_ERR) {
         return -1;
-    }
-
-    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+    } else if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
         return -1;
+    } else {
+        return 0;
     }
-    
-    return 0;
 }
 
 static i32 start_listening(u32 port, char *host) {
     // creacion del socket
     i32 fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd == -1) {
-        printf("error al crear socket\n");
+        log_error("error al crear socket\n");
         exit(EXIT_FAILURE);
     }
 
     // address reutilizable, no hace falta esperar al TIME_WAIT
     i32 reuse = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) == -1) {
-        printf("error al realizar setsockopt(SO_REUSEADDR)\n");
+        log_error("error al realizar setsockopt(SO_REUSEADDR)\n");
         exit(EXIT_FAILURE);
     }
     
@@ -399,20 +395,20 @@ static i32 start_listening(u32 port, char *host) {
     };
     
     if (bind(fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-        printf("error al realizar el bind\n");
+        log_error("error al realizar el bind\n");
         exit(EXIT_FAILURE);
     }
     
     // escuchar a traves del socket
     if (listen(fd, MAX_CONNECTIONS) == -1) {
-        printf("error al realizar el listen\n");
+        log_error("error al realizar el listen\n");
         exit(EXIT_FAILURE);
     }
 
     String server_host = string(inet_ntoa(server_addr.sin_addr));
     u16 server_port = ntohs(server_addr.sin_port);
 
-    printf("Servidor escuchando en: %.*s:%d\n", string_print(server_host), server_port);
+    log_info("Servidor escuchando en: %.*s:%d\n", string_print(server_host), server_port);
 
     return fd;
 }
@@ -437,57 +433,54 @@ static void server_accept_client(Server *server) {
 
     i32 client_fd = accept(server->fd, (struct sockaddr *)&client_addr, &client_addr_len);
     if (client_fd == -1) {
-        printf("error al aceptar cliente\n");
+        log_error("error al aceptar cliente\n");
         return;
     }
     
     if (set_nonblocking(client_fd) == -1) {
-        printf("error al setear el nonblocking\n");
+        log_error("error al setear el nonblocking\n");
         close(client_fd);
         return;
     }
 
     Connection *connection = server_find_free_connection(server);
     if (connection == NULL) {
-        printf("no hay conexiones libres\n");
+        log_error("no hay conexiones libres\n");
         close(client_fd);
         return;
     }
 
     if (events_add_fd(server->events_fd, client_fd) == -1) {
-        printf("error al agregar client_fd al epoll events\n");
+        log_error("error al agregar client_fd al epoll events\n");
         close(client_fd);
         return;
     }
 
-    connection_init(connection, client_fd, client_addr);
+    connection_init(connection, client_fd, client_addr, server->user_data);
 
-    // TODO: Esto deberia quedar en un archivo de log
-    printf("Nuevo cliente aceptado: %.*s:%d\n", string_print(connection->host),
-            connection->port);
+    log_info("Nuevo cliente aceptado: %.*s:%d\n", string_print(connection->host), connection->port);
 }
 
 static Connection *server_find_connection(Server *server, i32 fd) {
-    for (u32 i = 0; i < server->connections_count; i++) {
+    for (i32 i = 0; i < server->connections_count; i++) {
         if (server->connections[i].fd == fd) {
             return &server->connections[i];
         }
     }
-
     return NULL;
 }
 
 static Connection *server_find_free_connection(Server *server) {
-    for (u32 i = 0; i < server->connections_count; i++) {
+    for (i32 i = 0; i < server->connections_count; i++) {
         if (server->connections[i].is_active == false) {
             return &server->connections[i];
         }
     }
-
     return NULL;
 }
 
-static void connection_init(Connection *connection, i32 fd, struct sockaddr_in address) {
+static void connection_init(Connection *connection, i32 fd,
+                            struct sockaddr_in address, void *user_data) {
     if (connection->arena == NULL) {
         connection->arena = arena_make(1 * MB);
     } else {
@@ -501,8 +494,7 @@ static void connection_init(Connection *connection, i32 fd, struct sockaddr_in a
     connection->address = address; 
     connection->is_active = true;
     connection->keep_alive = false;
-    connection->request = (Request){0};
-    headers_init(&connection->request.headers_map);
+    request_init(&connection->request, user_data);
     parser_init(&connection->parser, connection->arena);
 }
 
@@ -511,10 +503,9 @@ static bool server_handle_connection(Server *server, Connection *connection) {
     Request *request = &connection->request;
 
     while (true) {
-
         Parser_Buffer *buffer = parser_push_buffer(parser); 
+        parser->bytes_read = recv(connection->fd, buffer->data, buffer->size, 0);
 
-        parser->bytes_read = read(connection->fd, buffer->data, buffer->size);
         if (parser->bytes_read < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 return false;
@@ -526,62 +517,71 @@ static bool server_handle_connection(Server *server, Connection *connection) {
         }
 
         u32 bytes_parsed = 0;
-
         while (bytes_parsed < parser->bytes_read) {
-            
             bytes_parsed += parser_parse_request(parser, request);
             
             if (parser->state == PARSER_STATE_FINISHED) {
-                Http_Handler *handler = find_handler_while_adding_path_params(&request->first_segment,
-                                                                              server->patterns_tree);
-                if (handler) {
+                Response response;
+                response_init(&response);
 
+                Http_Handler *handler = find_handler_while_adding_path_params(&request->first_segment,
+                                                                                server->patterns_tree);
+                if (handler) {
+                    // Connection header
                     String *connection_value = http_headers_get(&request->headers_map, string_lit("connection"));
-                    if (connection_value == NULL) {
-                        connection->keep_alive = string_eq(request->version, HTTP_VERSION_11);
-                    } else {
+                    if (connection_value) {
                         String connection_value_lower = string_to_lower(connection->arena, *connection_value);
                         connection->keep_alive = string_eq(connection_value_lower, string_lit("keep-alive"));
+                    } else {
+                        connection->keep_alive = string_eq(request->version, HTTP_VERSION_11);
                     }
-                
-                    Response response;
-                    response_init(&response);
-                
-                    handler(request, &response);
-                
-                    if (connection_write(connection, response) == -1) {
-                        connection->state = CONNECTION_STATE_FAILED;
-                        break;
-                    }
-                
-                    request_init(request); 
 
+                    handler(request, &response);
                 } else {
-                    // TODO: responder un 404 o algo
+                    http_response_set_status(&response, 404);
                 }
+
+                if (connection_write(connection, response) == -1) {
+                    connection->state = CONNECTION_STATE_FAILED;
+                    break;
+                }
+
+                // reset the request
+                request_init(request, server->user_data); 
             } else if (parser->state == PARSER_STATE_FAILED) {
+                Response response;
+                response_init(&response);
+                if (connection_write(connection, response) == -1) {
+                    connection->state = CONNECTION_STATE_FAILED;
+                    break;
+                }
+                http_response_set_status(&response, 400);
                 break;
             } else {
+                // Expect header
                 String *expect = http_headers_get(&request->headers_map, string_lit("expect"));
-                if (string_eq(*expect, string_lit("100-continue"))) {
+                if (expect) {
                     Response response;
                     response_init(&response);
-                    http_response_set_status(&response, 100);
 
-                    String *content_length = http_headers_get(&request->headers_map, string_lit("content-length"));
-                    if (content_length) {
-                        i64 body_size = string_to_i64(*content_length);
-                        if (body_size < 0 || body_size > MAX_BODY_SIZE) { 
-                            http_response_set_status(&response, 400);
+                    if (string_eq(*expect, string_lit("100-continue"))) {
+                        http_response_set_status(&response, 100);
+                        String *content_length = http_headers_get(&request->headers_map,
+                                                                  string_lit("content-length"));
+                        if (content_length) {
+                            i64 body_size = string_to_i64(*content_length);
+                            if (body_size < 0 || body_size > MAX_BODY_SIZE) { 
+                                http_response_set_status(&response, 413);
+                            }
                         }
+                    } else {
+                        http_response_set_status(&response, 400);
                     }
-                    
+
                     if (connection_write(connection, response) == -1) {
                         connection->state = CONNECTION_STATE_FAILED;
                         break;
                     }
-                } else {
-                    // TODO: logging
                 }
             }
         }
@@ -599,7 +599,8 @@ static bool server_handle_connection(Server *server, Connection *connection) {
     }
 
     if (connection->keep_alive) {
-        connection_init(connection, connection->fd, connection->address);
+        connection_init(connection, connection->fd, connection->address,
+                        server->user_data);
         connection->keep_alive = true;
         return false;
     } 
@@ -756,20 +757,19 @@ static i32 connection_write(Connection *connection, Response response) {
 
     String encoded_response = encode_response(arena, response);
 
-    // TODO: Esto deberia estar en un loop por temas de escritura parcial
-    i32 bytes_sent = write(connection->fd, encoded_response.data, encoded_response.size);
-
-    if (bytes_sent == -1) {
-        printf("[ERROR] connection_write - error al escribir en la conexion\n");
-        return -1;
+    i32 bytes_sent = 0;
+    while (true) {
+        bytes_sent = send(connection->fd, encoded_response.data + bytes_sent, encoded_response.size - bytes_sent, 0);
+        if (bytes_sent == -1) {
+            log_error("[ERROR] connection_write - error al escribir en la conexion\n");
+            return -1;
+        } else if (bytes_sent < encoded_response.size) {
+            // reintento
+            log_error("[ERROR] connection_write - escritura parcial\n");
+        } else {
+            return 0;
+        }
     }
-
-    if (bytes_sent != encoded_response.size) {
-        printf("[ERROR] connection_write - escritura parcial\n");
-        return -1;
-    }
-
-    return 0;
 }
 
 static String encode_response(Arena *arena, Response response) {
@@ -889,7 +889,7 @@ static String parser_extract_block(Parser *parser, u32 last_buffer_offset) {
 
         void *data = arena_alloc(parser->arena, total_size);
 
-        memcpy(data, first_buffer_offset, total_size);
+        memory_copy(data, first_buffer_offset, total_size);
 
         String result = {
             .data = data, 
@@ -909,17 +909,17 @@ static String parser_extract_block(Parser *parser, u32 last_buffer_offset) {
     void *data = arena_alloc(parser->arena, total_size);
     void *next_memcpy = data;
 
-    memcpy(next_memcpy, first_buffer_offset, first_buffer_remaining_size);
+    memory_copy(next_memcpy, first_buffer_offset, first_buffer_remaining_size);
     next_memcpy += first_buffer_remaining_size;
 
     Parser_Buffer *buffer;
 
     for (buffer = first_buffer->next; buffer != last_buffer; buffer = buffer->next) {
-        memcpy(next_memcpy, buffer->data, buffer_max_size);
+        memory_copy(next_memcpy, buffer->data, buffer_max_size);
         next_memcpy += buffer_max_size;
     }
 
-    memcpy(next_memcpy, buffer->data, last_buffer_offset + 1);
+    memory_copy(next_memcpy, buffer->data, last_buffer_offset + 1);
 
     String result = {
         .data = data,
@@ -1366,12 +1366,15 @@ static String http_status_reason(u16 status) {
         case 200: return string_lit("Ok");
         case 201: return string_lit("Created");
         case 400: return string_lit("Bad Request");
+        case 404: return string_lit("Not Found");
+        case 413: return string_lit("Content Too Large");
         default: return string_lit("Unknown");
     }
 }
 
-static void request_init(Request *request) {
+static void request_init(Request *request, void *user_data) {
     *request = (Request){0};
+    request->user_data = user_data;
     headers_init(&request->headers_map);
 }
 
@@ -1472,4 +1475,5 @@ String *http_headers_get(Headers_Map *headers_map, String name) {
 
     return NULL;
 }
+
 
